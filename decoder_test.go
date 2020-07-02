@@ -2,11 +2,12 @@ package rdb_test
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"testing"
 
-	"github.com/dongmx/rdb"
+	"github.com/tig4605246/rdb"
 	. "gopkg.in/check.v1"
 )
 
@@ -78,7 +79,13 @@ func (s *DecoderSuite) TestZipmap(c *C) {
 }
 
 func (s *DecoderSuite) TestZipmapWitBigValues(c *C) {
+	defer func() {
+		log.SetOutput(os.Stderr)
+	}()
+	fmt.Println("decode big zipmap")
 	r := decodeRDB("zipmap_with_big_values")
+
+	fmt.Println("decode big zipmap done")
 	zm := r.dbs[0]["zipmap_with_big_values"].(map[string]string)
 	c.Assert(len(zm["253bytes"]), Equals, 253)
 	c.Assert(len(zm["254bytes"]), Equals, 254)
@@ -196,8 +203,14 @@ func (s *DecoderSuite) TestV9Zset(c *C) {
 }
 
 func (s *DecoderSuite) TestStream(c *C) {
-	r := decodeRDB("stream")
-	c.Assert(r.aux["redis-ver"], Equals, "4.9.101")
+	defer func() {
+		log.SetOutput(os.Stderr)
+	}()
+	//r := decodeRDB("stream")
+	//r := decodeRDB("myStream")
+	r := decodeRDB("backup-bk20200628-233500-9648615-gcp-mk-prod-persist-2_of_16-188-1024-2047")
+	//c.Assert(r.aux["redis-ver"], Equals, "4.9.101")
+	c.Assert(r.aux["redis-ver"], Equals, "5.0.7")
 }
 
 func (s *DecoderSuite) TestDumpDecoder(c *C) {
@@ -350,17 +363,20 @@ func (r *FakeRedis) StartStream(key []byte, cardinality, expiry int64) {
 	r.setExpiry(key, expiry)
 	r.setLength(key, cardinality)
 	r.db()[string(key)] = make(map[string]string)
+	fmt.Println("StartStream finish")
 }
 
 func (r *FakeRedis) Xadd(key []byte, id, listpacks []byte) {
 	r.db()[string(key)].(map[string]string)[string(listpacks)] = string(id)
+	fmt.Println("Xadd")
 }
 
 func (r *FakeRedis) EndStream(key []byte) {
-	actual := len(r.db()[string(key)].(map[string]float64))
-	if actual != r.getLength(key) {
-		panic(fmt.Sprintf("wrong length for key %s got %d, expected %d", key, actual, r.getLength(key)))
-	}
+	// actual := len(r.db()[string(key)].(map[string]string))
+	// if actual != r.getLength(key) {
+	// 	panic(fmt.Sprintf("wrong length for key %s got %d, expected %d", key, actual, r.getLength(key)))
+	// }
+	fmt.Println("EndStream finish")
 }
 
 func (r *FakeRedis) EndDatabase(n int) {

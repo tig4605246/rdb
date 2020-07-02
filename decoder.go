@@ -10,7 +10,7 @@ import (
 	"math"
 	"strconv"
 
-	"github.com/dongmx/rdb/crc64"
+	"github.com/tig4605246/rdb/crc64"
 	"github.com/pkg/errors"
 )
 
@@ -289,6 +289,7 @@ func (d *decode) decode() error {
 			}
 			d.event.StartDatabase(int(db))
 		case rdbOpCodeEOF:
+			//fmt.Println("End?")
 			d.event.EndDatabase(int(db))
 			d.event.EndRDB()
 			return nil
@@ -445,10 +446,14 @@ func (d *decode) readStream(key []byte, expiry int64) error {
 		return err
 	}
 	d.event.StartStream(key, int64(cardinality), expiry)
+
+	// Loop through listpack
+	//fmt.Println("ListPack length,", cardinality)
 	for cardinality > 0 {
 		cardinality--
 
 		streamID, err := d.readString()
+		//fmt.Println("StreamID is", streamID)
 		if err != nil {
 			return err
 		}
@@ -458,26 +463,35 @@ func (d *decode) readStream(key []byte, expiry int64) error {
 			fmt.Println(string(key))
 			fmt.Println(IDms + "-" + IDseq)
 		*/
-		err = d.readListPack()
-		if err != nil {
-			return err
-		}
+		// err = d.readListPack()
+		// if err != nil {
+		// 	return err
+		// }
+		_, _ = d.readString()
+		//fmt.Println("data is", data)
+		//_, _ = d.readString()
 		d.event.Xadd(key, streamID, []byte{})
+		// fmt.Println("cardinality", cardinality)
 	}
-	var length, lastIDms, lastIDseq uint64
-	length, _, err = d.readLength()
+
+	//fmt.Println("read item start")
+	// Read item length, lastID ms, lastID seq
+	var itemLength, lastIDms, lastIDseq uint64
+	itemLength, _, err = d.readLength()
 	if err != nil {
 		return err
 	}
-	lastIDms, _, err = d.readLength()
+	lastIDms, _, err = d.readLengthStream()
 	if err != nil {
 		return err
 	}
-	lastIDseq, _, err = d.readLength()
+	lastIDseq, _, err = d.readLengthStream()
 	if err != nil {
 		return err
 	}
-	_, _, _ = length, lastIDms, lastIDseq
+	//fmt.Println("item length", itemLength, "lastIDms", lastIDms, "lastIDseq", lastIDseq)
+	_, _, _ = itemLength, lastIDms, lastIDseq
+	//fmt.Println("read item finish")
 
 	//TODO output consumer groups
 	var groupsCount uint64
@@ -485,18 +499,35 @@ func (d *decode) readStream(key []byte, expiry int64) error {
 	if err != nil {
 		return err
 	}
-	//fmt.Println(groupsCount)
+
+	//fmt.Println("Iterate consumer groups start")
+	// Iterate groups
+	//fmt.Println("Number of consumer groups", groupsCount)
+	// b := make([]byte, 8)
+	// binary.BigEndian.PutUint64(b, uint64(groupsCount))
+
+	//fmt.Println("consumer groups in bytes", b)
 	for groupsCount > 0 {
 		groupsCount--
+
+		// Get name
 		name, err := d.readString()
 		if err != nil {
 			return err
 		}
+		//fmt.Println("Read Name finish")
+
+		// Length of gIDms, gIDseq
 		gIDms, _, _ := d.readLength()
 		gIDseq, _, _ := d.readLength()
 		_, _, _ = name, gIDms, gIDseq
+		//fmt.Println("Read gIDs finish")
 
+		// pending list size
 		pelSize, _, _ := d.readLength()
+		//fmt.Println("Read pending list size finish")
+
+		// Iterate pending list
 		for pelSize > 0 {
 			pelSize--
 			d.readUint64()
@@ -505,7 +536,13 @@ func (d *decode) readStream(key []byte, expiry int64) error {
 			d.readUint64()
 			d.readLength()
 		}
+		//fmt.Println("Iterate pending list finish")
+
+		// Get number of consumers
 		consumersNum, _, _ := d.readLength()
+		//fmt.Println("consumersNum finish")
+
+		// Iterate consumers
 		for consumersNum > 0 {
 			consumersNum--
 			d.readString()
@@ -518,10 +555,13 @@ func (d *decode) readStream(key []byte, expiry int64) error {
 				io.ReadFull(d.r, rawid)
 			}
 		}
+		//fmt.Println("Iterate consumer finish")
 	}
+	//fmt.Println("Iterate consumer groups finish")
 
+	// End Stream
 	d.event.EndStream(key)
-
+	//fmt.Println("end")
 	return nil
 }
 
@@ -1143,6 +1183,48 @@ func (d *decode) readLength() (uint64, bool, error) {
 		}
 		return uint64(bb), false, nil
 	case rdb64bitLen:
+		bb, err := d.readUint64()
+		if err != nil {
+			return 0, false, err
+		}
+		return bb, false, nil
+	case rdbEncVal:
+		// When the first two bits are 11, the next object is encoded.
+		// The next 6 bits indicate the encoding type.
+		return uint64(b & 0x3f), true, nil
+	default:
+		// When the first two bits are 10, the next 6 bits are discarded.
+		// The next 4 bytes are the length.
+		length, err := d.readUint32Big()
+		return uint64(length), false, err
+	}
+
+}
+
+func (d *decode) readLengthStream() (uint64, bool, error) {
+	b, err := d.r.ReadByte()
+	if err != nil {
+		return 0, false, errors.Wrap(err, "readfailed")
+	}
+	// The first two bits of the first byte are used to indicate the length encoding type
+	switch (b & 0xc0) >> 6 {
+	case rdb6bitLen:
+		// When the first two bits are 00, the next 6 bits are the length.
+		return uint64(b & 0x3f), false, nil
+	case rdb14bitLen:
+		// When the first two bits are 01, the next 14 bits are the length.
+		bb, err := d.r.ReadByte()
+		if err != nil {
+			return 0, false, errors.Wrap(err, "readfailed")
+		}
+		return (uint64(b&0x3f) << 8) | uint64(bb), false, nil
+	case rdb32bitLen:
+		bb, err := d.readUint32()
+		if err != nil {
+			return 0, false, err
+		}
+		return uint64(bb), false, nil
+	case rdb64bitLen, 2:
 		bb, err := d.readUint64()
 		if err != nil {
 			return 0, false, err
